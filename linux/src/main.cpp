@@ -30,9 +30,24 @@ namespace {
 void printUsage(const char* prog) {
     std::cout <<
         "Usage: " << prog << " --out <basename> [options]\n"
+        "\n"
+        "Captures raw IQ, following the same sequence as the MATLAB\n"
+        "run_GetComplexData.m: PUPradar_initiating -> Send_Basic_Parameter ->\n"
+        "Send_PLL_Sawtooth -> GetComplexData. The options below are exactly the\n"
+        "makeRadarHandles() parameters; nothing else is adjustable.\n"
+        "\n"
         "Options:\n"
-        "  --duration <s>            Capture duration in seconds (default 5)\n"
         "  --out <basename>          Output basename (writes <basename>.bin and .json)\n"
+        "  --sweep-time-index <1-5>  1=0.5ms 2=1ms 3=2ms 4=4ms 5=8ms (default 1)\n"
+        "  --transmitter <name>      Tx1 | Tx2 | Tx1.Tx2 (default Tx1)\n"
+        "  --receiver <name>         Rx1 | Rx2 | Rx3 | Rx4 | Rx1.Rx2 | Rx3.Rx4 |\n"
+        "                            Rx1.Rx2.Rx3.Rx4 (default Rx1)\n"
+        "  --sampling-index <1-4>    1=BASN, 2=BASN/2, 3=BASN/4, 4=BASN/8 (default 1).\n"
+        "                            Samples per sweep follow from the sweep time and\n"
+        "                            receiver count; they are not set directly.\n"
+        "  --num-sweeps <n>          Sweeps to acquire (default 128)\n"
+        "  --fc-low <Hz>             Chirp start frequency (default 24.0e9)\n"
+        "  --fc-high <Hz>            Chirp stop frequency (default 24.25e9)\n"
         "  --firmware <path>         Path to SDR_USB_FW.hex (default: ./firmware/SDR_USB_FW.hex)\n"
         "  --fc-low <Hz>             Sawtooth low frequency (default 24.0e9)\n"
         "  --fc-high <Hz>            Sawtooth high frequency (default 24.25e9)\n"
@@ -49,6 +64,28 @@ void printUsage(const char* prog) {
         "                            shows up a run or two late.\n"
         "  --drain-timeout-ms <ms>   Upper bound on the drain (default 1000)\n"
         "  -h, --help                Show this help\n";
+}
+
+/// Transmitter name -> (command value, channel count).
+/// Mirrors makeRadarHandles / PUPradarGUI.m:2000-2021.
+bool parseTransmitter(const std::string& s, std::uint8_t& value, int& count) {
+    if (s == "Tx1")     { value = 1; count = 1; return true; }
+    if (s == "Tx2")     { value = 2; count = 1; return true; }
+    if (s == "Tx1.Tx2") { value = 3; count = 2; return true; }
+    return false;
+}
+
+/// Receiver name -> (command value, channel count).
+/// Mirrors makeRadarHandles / PUPradarGUI.m:2026-2075.
+bool parseReceiver(const std::string& s, std::uint8_t& value, int& count) {
+    if (s == "Rx1")             { value =  1; count = 1; return true; }
+    if (s == "Rx2")             { value =  2; count = 1; return true; }
+    if (s == "Rx3")             { value =  4; count = 1; return true; }
+    if (s == "Rx4")             { value =  8; count = 1; return true; }
+    if (s == "Rx1.Rx2")         { value =  3; count = 2; return true; }
+    if (s == "Rx3.Rx4")         { value = 12; count = 2; return true; }
+    if (s == "Rx1.Rx2.Rx3.Rx4") { value = 15; count = 4; return true; }
+    return false;
 }
 
 class Args {
@@ -99,6 +136,12 @@ int main(int argc, char** argv) try {
         printUsage(argv[0]);
         return 2;
     }
+
+    // Every option below is a makeRadarHandles() parameter. Operational
+    // details the MATLAB path does not expose either (USB IDs, timeouts,
+    // re-enumeration budget) are fixed constants further down.
+    const std::string transmitter = args.get("transmitter", "Tx1");
+    const std::string receiver    = args.get("receiver",    "Rx1");
 
     pupradar::CaptureConfig cfg;
     cfg.duration_s      = args.getDouble("duration", 5.0);
@@ -158,15 +201,15 @@ int main(int argc, char** argv) try {
         std::printf("[pupradar] warning: FA05 signature not found in board info\n");
     }
 
-    std::cout << "[pupradar] configuring sawtooth FMCW…\n";
-    session.configure(cfg);
-
     pupradar::IqWriter writer(out_base);
     auto sink = [&writer](const std::uint8_t* d, std::size_t n) {
         writer.write(d, n);
     };
 
-    std::cout << "[pupradar] capturing for " << cfg.duration_s << " s…\n";
+    // captureIq configures (Send_Basic_Parameter + Send_PLL_Sawtooth) and then
+    // reads, in that order — no separate configure() call here.
+    std::cout << "[pupradar] configuring and capturing " << cfg.num_sweeps
+              << " sweeps (" << cfg.num_sweeps * sweep_time_s << " s)…\n";
     auto md = session.captureIq(cfg, sink);
     writer.finalize(md);
 

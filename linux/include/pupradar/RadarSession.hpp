@@ -54,7 +54,8 @@ struct CaptureMetadata {
     int             num_rx;
     std::uint8_t    tx_mask;
     std::uint8_t    rx_mask;
-    double          requested_duration_s;
+    int             num_sweeps;
+    double          requested_duration_s;   // num_sweeps * sweep_time_s
     double          actual_duration_s;
     // What we measured
     std::size_t     bytes_captured;

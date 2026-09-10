@@ -351,7 +351,7 @@ void RadarSession::configure(const CaptureConfig& cfg) {
 }
 
 /**
- * @brief Records cfg.duration_s of IQ the way the GUI's Record button does.
+ * @brief Records cfg.num_sweeps of IQ the way the GUI's Record button does.
  *
  * Follows PUPradarGUI.m:1831-1859 (Record), NOT the display loop at :203-248:
  *   1. configure() ONCE — basic parameters and PLL registers.
@@ -401,7 +401,10 @@ CaptureMetadata RadarSession::captureIq(const CaptureConfig& cfg,
     // GUI Record (PUPradarGUI.m:1831-1859) sets NumSweeps = RecordTime /
     // SweepTime — the whole recording, not a batch — and makes a SINGLE
     // GetComplexData call for it.
-    const auto num_sweeps = static_cast<std::size_t>(cfg.duration_s / sweep_time_s);
+    // MATLAB passes NumSweeps straight in (handles.NumSweeps); we do the same
+    // rather than deriving it from a wall-clock duration.
+    const auto num_sweeps = static_cast<std::size_t>(cfg.num_sweeps);
+    const double expected_duration_s = static_cast<double>(num_sweeps) * sweep_time_s;
     const std::size_t raw_bytes = (num_sweeps + 40) * bytes_per_sweep;
     // Round UP to a 512-byte boundary, then add 4096 (GUI line 2730).
     const std::size_t capture_bytes = ((raw_bytes + 511u) / 512u) * 512u + 4096u;
@@ -499,7 +502,8 @@ CaptureMetadata RadarSession::captureIq(const CaptureConfig& cfg,
     md.num_rx                   = n_rx;
     md.tx_mask                  = cfg.tx_mask;
     md.rx_mask                  = cfg.rx_mask;
-    md.requested_duration_s     = cfg.duration_s;
+    md.num_sweeps               = cfg.num_sweeps;
+    md.requested_duration_s     = expected_duration_s;
     md.actual_duration_s        = std::chrono::duration<double>(t_done - t_start).count();
     // Report what actually reached the sink (and therefore the .bin), not what
     // came off the wire, so the sidecar matches the file on disk.
