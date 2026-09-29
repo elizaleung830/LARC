@@ -49,20 +49,13 @@ void printUsage(const char* prog) {
         "  --fc-low <Hz>             Chirp start frequency (default 24.0e9)\n"
         "  --fc-high <Hz>            Chirp stop frequency (default 24.25e9)\n"
         "  --firmware <path>         Path to SDR_USB_FW.hex (default: ./firmware/SDR_USB_FW.hex)\n"
-        "  --fc-low <Hz>             Sawtooth low frequency (default 24.0e9)\n"
-        "  --fc-high <Hz>            Sawtooth high frequency (default 24.25e9)\n"
-        "  --sweep-time <1-5>        Sweep-time index: 1=0.5ms 2=1ms 3=2ms 4=4ms 5=8ms (default 2)\n"
-        "  --samp-num <1-4>          Sampling-number index (1=BASN, 2=BASN/2, ... default 1)\n"
-        "  --tx <mask>               Tx mask: 1=Tx1, 2=Tx2, 3=both (default 1)\n"
-        "  --rx <mask>               Rx mask: 1/2/4/8 single, 3=Rx12, 12=Rx34, 15=All (default 1)\n"
-        "  --download-firmware       Apply this flag to a board that haven't downloaded the firmware yet. (i.e., when board is in a new power cycle)\n"
-        "  --cmd-delay-us <us>       Settling delay after each command packet (default 20000).\n"
-        "                            Raise it if the board ignores parameters or returns filler.\n"
-        "  --drain-sweeps <n>        Sweeps to read and discard after configuring, before the\n"
-        "                            timed capture (default 0 = no drain; 64 is the GUI's\n"
-        "                            per-frame value). Set it if a changed --rx/--tx still\n"
-        "                            shows up a run or two late.\n"
-        "  --drain-timeout-ms <ms>   Upper bound on the drain (default 1000)\n"
+        "  --cmd-delay-us <us>       Settling delay after each of the 22 command packets\n"
+        "                            (default 15000). Stands in for the per-command USB device\n"
+        "                            enumeration MATLAB pays on every miniradarputdata call,\n"
+        "                            which is what gives the MCU time to latch a setting.\n"
+        "                            Raise it if --receiver / --transmitter still fail to change\n"
+        "                            what the radar samples, or if a capture comes back with\n"
+        "                            0 sweep markers.\n"
         "  -h, --help                Show this help\n";
 }
 
@@ -162,29 +155,50 @@ int main(int argc, char** argv) try {
     const std::string firmware    = args.get("firmware", "firmware/SDR_USB_FW.hex");
     const unsigned int cmd_delay_us = args.getUint("cmd-delay-us", 2000);
 
-    std::cout << "[pupradar] firmware: "  << firmware  << "\n";
-    std::cout << "[pupradar] out: "       << out_base  << ".bin / .json\n";
-    std::cout << "[pupradar] capture: "   << cfg.duration_s << " s, "
-              << cfg.f_low_hz/1e9 << ".."  << cfg.f_high_hz/1e9 << " GHz, "
-              << "sweep_idx=" << cfg.sweep_time_idx
-              << " samp_idx=" << cfg.samp_num_idx
-              << " tx_mask=0x" << std::hex << +cfg.tx_mask
-              << " rx_mask=0x" << +cfg.rx_mask << std::dec << "\n";
+    // Fixed operational constants — the MATLAB path hard-codes these too.
+    // usbcheckchip checks vID 1204 (0x04B4) / pID 34323 (0x8613); see
+    // PUPradar_initiating.m.
+    constexpr unsigned int kReenumTimeoutMs = 5000;
+    std::vector<pupradar::IUsbBackend::VidPid> post_fw{{0x04B4, 0x8613}};
+
+    // Settling delay after each command packet — the one thing standing in for
+    // what MATLAB gets for free. Every mex call builds and destroys a whole
+    // CCyUSBDevice (miniradarputdata.cpp:35-41), and enumerating the USB tree
+    // that way costs milliseconds to tens of milliseconds per command word, so
+    // the MCU always has time to latch one setting before the next arrives.
+    // libusb has no such overhead, so the gap has to be explicit. 15 ms x 22
+    // words is ~0.3 s of configuration, in the same range as MATLAB's.
+    //
+    // Note this cannot be replaced by opening/closing the device per command:
+    // libusb_release_interface issues SET_INTERFACE, which flushes the FX2's
+    // EP2 FIFO and destroys the command word in flight. See sendCommand().
+    const unsigned int cmd_delay_us = args.getUint("cmd-delay-us", 15000);
+
+    const int samples_per_sweep =
+        pupradar::samplesPerSweep(cfg.sweep_time_idx, cfg.samp_num_idx, n_rx);
+    const double sweep_time_s = pupradar::sweepTimeFromIndex(cfg.sweep_time_idx);
+
+    std::cout << "[pupradar] firmware: " << firmware << "\n";
+    std::cout << "[pupradar] out: "      << out_base << ".bin / .json\n";
+    std::cout << "[pupradar] config: "   << n_tx << " Tx / " << n_rx << " Rx ("
+              << transmitter << ", " << receiver << "), "
+              << sweep_time_s * 1e3 << " ms sweep, "
+              << samples_per_sweep  << " samples/sweep/Rx, "
+              << cfg.num_sweeps     << " sweeps\n";
+    std::cout << "[pupradar] chirp: "    << cfg.f_low_hz/1e9 << ".."
+              << cfg.f_high_hz/1e9      << " GHz\n";
     std::cout << "[pupradar] cmd delay: " << cmd_delay_us << " us\n";
-    std::cout << "[pupradar] drain: "     << cfg.drain_sweeps << " sweeps (max "
-              << cfg.drain_timeout_ms     << " ms)\n";
 
     pupradar::UsbDevice    usb;
     pupradar::RadarSession session(usb, firmware);
-    // Set before bring-up so the board-info handshake gets the same pacing.
     session.setCommandDelayUs(cmd_delay_us);
-    if (args.downloadFirmware()) {
-        std::cout << "[pupradar] initializing (open → claim → firmware → reopen)…\n";
-        session.initialize({{pupradar::kPostFirmwareVid, pupradar::kPostFirmwarePid}});
-    } else {
-        std::cout << "[pupradar] attaching to a running board…\n";
-        session.attachRunning(pupradar::kPostFirmwareVid, pupradar::kPostFirmwarePid);
-    }
+
+    // Always the full bring-up with a firmware download, matching
+    // PUPradar_initiating.m — which run_GetComplexData.m calls on every run.
+    // The Cypress loader holds the 8051 in reset while it writes, so the board
+    // starts from a known state and cannot carry stale sweeps in its FIFO.
+    std::cout << "[pupradar] initializing (open → claim → firmware → reopen)…\n";
+    session.initialize(post_fw, kReenumTimeoutMs);
 
     std::printf("[pupradar] board info (uint16 words, hex): ");
     for (auto w : session.lastBoardInfo()) std::printf("%04X ", w);
@@ -212,6 +226,15 @@ int main(int argc, char** argv) try {
               << " sweeps (" << cfg.num_sweeps * sweep_time_s << " s)…\n";
     auto md = session.captureIq(cfg, sink);
     writer.finalize(md);
+
+    if (md.sweep_markers_found == 0) {
+        std::cerr << "[pupradar] WARNING: 0 sweep markers found in the capture "
+                     "- the board likely missed a configuration command "
+                     "(no Tx1/Tx2 header ever got tagged). Try a larger "
+                     "--cmd-delay-us and re-capture.\n";
+    } else {
+        std::cout << "[pupradar] sweep markers found: " << md.sweep_markers_found << "\n";
+    }
 
     std::cout << "[pupradar] done: " << md.bytes_captured << " bytes in "
               << md.reads_completed  << " reads ("
