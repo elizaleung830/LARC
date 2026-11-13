@@ -154,12 +154,6 @@ void RadarSession::downloadFirmware() {
  * kBoardInfoExposedBytes starting at kBoardInfoUsefulOffsetBytes (2048),
  * decoded as little-endian uint16 words.
  *
- * Hardware note: the device may return fewer than kBoardInfoReadBytes bytes.
- * The observed minimum is ~2058 (useful_offset + 10), which covers all 5
- * semantically meaningful words from the MATLAB GUI (lines 2675-2683).
- * The decode is therefore bounded by however many bytes actually arrived,
- * not by the nominal kBoardInfoExposedBytes.
- *
  * @throws std::runtime_error if the bulk read returns fewer than
  *         kBoardInfoUsefulOffsetBytes + 2 bytes (less than 1 uint16 word).
  */
@@ -400,12 +394,6 @@ CaptureMetadata RadarSession::captureIq(const CaptureConfig& cfg,
         2u /* I and Q */ *
         static_cast<std::size_t>(n_rx) * static_cast<std::size_t>(n_tx);
 
-    // ...and two bytes per word. The GUI drops this factor: line 2730 builds
-    // DataLength from the WORD count, but miniradargetdata hands it to CyAPI
-    // XferData as a BYTE count (miniradargetdata.cpp:40), so the GUI actually
-    // transfers half the sweeps it asked for — which is why it then has to clamp
-    // NumSweeps down to ValidSweepNumber at lines 2744-2748. Mirroring that
-    // exactly gave captures half the requested duration, so keep the factor.
     const std::size_t bytes_per_sweep = words_per_sweep * 2u;
 
     // ---- 1. Size the transfer, as GUI Record does --------------------------
@@ -415,17 +403,10 @@ CaptureMetadata RadarSession::captureIq(const CaptureConfig& cfg,
     // GetComplexData call for it.
     const auto num_sweeps = static_cast<std::size_t>(cfg.duration_s / sweep_time_s);
     const std::size_t raw_bytes = (num_sweeps + 40) * bytes_per_sweep;
-    // Round UP to a 512-byte boundary, then add 4096 (GUI line 2730). The extra
-    // 4096 exists because the first 4096 bytes are stale FIFO content; the GUI
-    // discards exactly that many at line 2734.
+    // Round UP to a 512-byte boundary, then add 4096 (GUI line 2730).
     const std::size_t capture_bytes = ((raw_bytes + 511u) / 512u) * 512u + 4096u;
 
     // ---- 2. Buffer and the read helper both phases share -------------------
-    //
-    // One max-packet of slack past capture_bytes. libusb hands the whole request
-    // to the kernel, which will write a complete packet or fail the transfer, so
-    // the destination must always have room for one even when the tail of the
-    // capture does not need it.
     std::vector<std::uint8_t> buf(capture_bytes + kBulkPacketBytes, 0);
 
     // Fills `buf` up to capture_bytes without reconfiguring, returning the bytes
@@ -457,21 +438,6 @@ CaptureMetadata RadarSession::captureIq(const CaptureConfig& cfg,
     };
 
     // ---- 3. Configure, drain, reconfigure ----------------------------------
-    //
-    // configure() is sent ONCE per phase and the device is left alone for the
-    // whole timed transfer. An earlier implementation re-sent all 22 command
-    // packets before every 30 KB read, hundreds of times per capture;
-    // re-triggering the sweep generator mid-stream produced one live sweep per
-    // read followed by the mixer output decaying to DC. That stays fixed — the
-    // drain below happens strictly BEFORE the timed capture begins.
-    //
-    // Why the drain exists: the board free-runs into the EP6 FIFO regardless of
-    // whether the host reads it, so the first bytes of a cold configure-then-read
-    // are data produced under the PREVIOUS configuration. The fixed 4096-byte
-    // discard below is a preamble skip copied from GUI line 2734, not a flush —
-    // if more than that is queued, stale-config samples land in the capture, and
-    // on a short capture the whole file can predate the change. See
-    // CaptureConfig::drain_sweeps for why the GUI never hits this.
     using clock = std::chrono::steady_clock;
 
     configure(cfg);
@@ -491,9 +457,6 @@ CaptureMetadata RadarSession::captureIq(const CaptureConfig& cfg,
                 break;
             }
             const std::size_t remaining = drain_target - drain_bytes;
-            // Same whole-packet rule as the capture read: a bulk IN request that
-            // is not a multiple of the max packet size overflows the moment the
-            // device sends a full packet into a short remainder.
             std::size_t request = std::min(scratch.size(), remaining);
             request = (request / kBulkPacketBytes) * kBulkPacketBytes;
             if (request == 0) break;  // less than one packet left to ask for
@@ -507,10 +470,6 @@ CaptureMetadata RadarSession::captureIq(const CaptureConfig& cfg,
                      "[pupradar] drained %zu bytes (%d sweeps requested)%s\n",
                      drain_bytes, cfg.drain_sweeps,
                      drain_completed ? "" : " — hit drain timeout");
-
-        // Reassert the parameters, as every iteration of the GUI's loop does.
-        // A command swallowed while stale data was still draining out would
-        // otherwise leave the capture on the old settings.
         configure(cfg);
     }
 

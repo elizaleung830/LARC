@@ -191,13 +191,6 @@ void UsbDevice::setAltSetting(int interface_number, int alt_setting) {
 /**
  * @brief Issues a USB port reset, returning the chip to its power-on state.
  *
- * @c libusb_reset_device reports @c LIBUSB_ERROR_NOT_FOUND when the device
- * re-enumerated as a result of the reset — the previous handle is then dead and
- * the device must be reopened. That is a normal outcome here rather than a
- * failure, so this method transparently reopens the same VID:PID (recorded by
- * open()) and returns with a usable handle. Firmware already resident in FX2
- * RAM survives the reset.
- *
  * @throws UsbError if the device is not open, the reset fails for any other
  *         reason, or the device does not reappear after re-enumerating.
  */

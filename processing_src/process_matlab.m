@@ -16,8 +16,7 @@ function [raw, I_out, Q_out, freqAxis, rangeAxis, avgSpectrum] = process_matlab(
 
     %% Constants
     c      = 3e8;
-    % Empirically, the factor of 2 in fs will give correct result. Still
-    % not 100% sure whty
+    % The factor of 2 in fs need to be double-checked
     fs     = sampSize / T_sweep /2 ;   
     fftSize = sampSize;
 
