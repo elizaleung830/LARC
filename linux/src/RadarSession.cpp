@@ -278,7 +278,7 @@ void RadarSession::initialize(
     // these, the way each MEX call constructs a fresh CCyUSBDevice.
     post_fw_ = post_fw_candidates;
 
-    // GUI's 2 unconditional attempts + 5 retries (PUPradarGUI.m:114-122).
+    // Retries 7 times before valid board info returns from radar
     constexpr int kMaxInitAttempts = 7;
     for (int attempt = 1; attempt <= kMaxInitAttempts; ++attempt) {
         std::fprintf(stderr, "[pupradar] init attempt %d/%d\n",

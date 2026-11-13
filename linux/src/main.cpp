@@ -90,8 +90,6 @@ public:
             if (a.rfind("--", 0) != 0) {
                 throw std::runtime_error("Unexpected positional argument: " + a);
             }
-            // Valueless flags must be checked before the "needs a value" test.
-            if (a == "--download-firmware") { download_firmware_ = true; continue; }
             if (i + 1 >= argc) {
                 throw std::runtime_error("Missing value for " + a);
             }
@@ -99,7 +97,6 @@ public:
         }
     }
     bool        help() const { return help_; }
-    bool        downloadFirmware() const { return download_firmware_; }
     bool        has(const std::string& k) const { return kv_.count(k) != 0; }
     std::string get(const std::string& k, const std::string& def = "") const {
         auto it = kv_.find(k); return it == kv_.end() ? def : it->second;
@@ -115,7 +112,6 @@ public:
     }
 private:
     bool help_ = false;
-    bool download_firmware_ = false;
     std::map<std::string, std::string> kv_;
 };
 
@@ -137,23 +133,42 @@ int main(int argc, char** argv) try {
     const std::string receiver    = args.get("receiver",    "Rx1");
 
     pupradar::CaptureConfig cfg;
-    cfg.duration_s      = args.getDouble("duration", 5.0);
-    cfg.f_low_hz        = args.getDouble("fc-low",   24.0e9);
-    cfg.f_high_hz       = args.getDouble("fc-high",  24.25e9);
-    cfg.sweep_time_idx  = args.getInt   ("sweep-time", 2);
-    cfg.samp_num_idx    = args.getInt   ("samp-num",   1);
-    cfg.tx_mask         = static_cast<std::uint8_t>(args.getInt("tx", 1));
-    cfg.rx_mask         = static_cast<std::uint8_t>(args.getInt("rx", 1));
-    cfg.drain_sweeps    = args.getInt   ("drain-sweeps", 0);
-    cfg.drain_timeout_ms = args.getUint ("drain-timeout-ms", 1000);
-    if (cfg.drain_sweeps < 0) {
-        std::cerr << "Error: --drain-sweeps must be >= 0 (0 disables the drain).\n";
+    cfg.f_low_hz       = args.getDouble("fc-low",  24.0e9);
+    cfg.f_high_hz      = args.getDouble("fc-high", 24.25e9);
+    cfg.sweep_time_idx = args.getInt("sweep-time-index", 1);
+    cfg.samp_num_idx   = args.getInt("sampling-index",   1);
+    cfg.num_sweeps     = args.getInt("num-sweeps",     128);
+
+    int n_tx = 0, n_rx = 0;
+    if (!parseTransmitter(transmitter, cfg.tx_mask, n_tx)) {
+        std::cerr << "Error: --transmitter must be Tx1, Tx2 or Tx1.Tx2 (got '"
+                  << transmitter << "').\n";
+        return 2;
+    }
+    if (!parseReceiver(receiver, cfg.rx_mask, n_rx)) {
+        std::cerr << "Error: --receiver must be Rx1..Rx4, Rx1.Rx2, Rx3.Rx4 or "
+                     "Rx1.Rx2.Rx3.Rx4 (got '" << receiver << "').\n";
+        return 2;
+    }
+    if (cfg.sweep_time_idx < 1 || cfg.sweep_time_idx > 5) {
+        std::cerr << "Error: --sweep-time-index must be 1..5.\n";
+        return 2;
+    }
+    if (cfg.samp_num_idx < 1 || cfg.samp_num_idx > 4) {
+        std::cerr << "Error: --sampling-index must be 1..4.\n";
+        return 2;
+    }
+    if (cfg.num_sweeps < 1) {
+        std::cerr << "Error: --num-sweeps must be >= 1.\n";
+        return 2;
+    }
+    if (cfg.f_high_hz <= cfg.f_low_hz) {
+        std::cerr << "Error: --fc-high must be above --fc-low.\n";
         return 2;
     }
 
-    const std::string out_base    = args.get("out");
-    const std::string firmware    = args.get("firmware", "firmware/SDR_USB_FW.hex");
-    const unsigned int cmd_delay_us = args.getUint("cmd-delay-us", 2000);
+    const std::string out_base = args.get("out");
+    const std::string firmware = args.get("firmware", "firmware/SDR_USB_FW.hex");
 
     // Fixed operational constants — the MATLAB path hard-codes these too.
     // usbcheckchip checks vID 1204 (0x04B4) / pID 34323 (0x8613); see
