@@ -1,4 +1,4 @@
-# LARC — PUP EN24C T2R4 24 GHz FMCW Radar
+# Luswave APR for Radar Control (LARC) — PUP EN24C T2R4 24 GHz FMCW Radar
 
 Capture and processing code for the **PUP EN24C T2R4** radar: 24 GHz FMCW, 2 Tx / 4 Rx, connected over USB through a Cypress FX2LP controller.
 
@@ -73,10 +73,6 @@ Building with MSVC on Windows is not supported. Use WSL.
 One-time cross-compile setup on Ubuntu 22.04 under WSL (replace `jammy` if you use another release):
 
 ```bash
-sudo dpkg --add-architecture arm64
-sudo sed -i -E 's|^deb (http.*)|deb [arch=amd64] \1|' /etc/apt/sources.list
-echo 'deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ jammy main universe' \
-    | sudo tee /etc/apt/sources.list.d/arm64.list
 sudo apt-get update
 sudo apt-get install -y cmake make pkg-config g++-aarch64-linux-gnu libusb-1.0-0-dev:arm64
 ```
@@ -91,7 +87,7 @@ Run everything from `linux/`. The Makefile is a thin wrapper around CMake.
 |---|---|
 | `make tests` | Debug build of the unit tests, then `ctest`. Needs neither libusb nor hardware. |
 | `make native` | Release build for the current machine, in `build-native/`. Also works on the Pi itself. |
-| `make` or `make cross` | Release build for aarch64, in `build-arm64/`. |
+| `make` or `make cross` | Release build for aarch64, in `build-arm64/`. Mainly used to build executable for PI from a window computer, require wsl setup mentioned in the prerequisites.|
 | `make deploy PI=user@host` | Cross-compile, then copy to the Pi (see Deployment). |
 | `make clean` | Remove all build directories. |
 
@@ -117,7 +113,7 @@ Open MATLAB in `Matlab src/` so the `.mexw64` files are on the path.
 make deploy PI=pi@raspberrypi.local
 ```
 
-This copies `pupradar_capture`, `pupradar_board_info`, `firmware/SDR_USB_FW.hex` and the udev rule to `~/pupradar` on the Pi. Add `DEST=/some/path` to change the directory. (`scripts/deploy_pi.sh` is an older equivalent that copies only `pupradar_capture`.)
+This copies `pupradar_capture`, `pupradar_board_info`, `firmware/SDR_USB_FW.hex` and the udev rule to `~/pupradar` on the Pi. Add `DEST=/some/path` to change the directory. (`scripts/deploy_pi.sh` is an older equivalent that copies only `pupradar_capture`.) Alternatively, run `make cross` to build an executable for Pi, then manually copy the executables, udev rule `~/pupradar/99-pupradar.rules` and `firmware/SDR_USB_FW.hex` to the Pi.
 
 **2. Allow non-root USB access**, once per Pi:
 
@@ -130,7 +126,7 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 
 ```bash
 cd ~/pupradar
-./pupradar_board_info          # downloads firmware, prints model and Tx/Rx count
+./pupradar_board_info          # This check if the program actually run. It prints model and Tx/Rx count
 ./pupradar_capture --out /tmp/cap --receiver Rx4 --sampling-index 4 --fc-high 26.0e9
 ```
 
@@ -150,7 +146,7 @@ The options match the parameters of `makeRadarHandles()` in the MATLAB path.
 | `--num-sweeps` | Sweeps to record | 128 |
 | `--fc-low`, `--fc-high` | Chirp start and stop in Hz | 24.0e9, 24.25e9 |
 | `--firmware` | Path to `SDR_USB_FW.hex` | `firmware/SDR_USB_FW.hex` |
-| `--cmd-delay-us` | Pause after each command packet | 15000 |
+| `--cmd-delay-us` | Pause after each command packet. (This can be set to a smaller number if you want faster command.) | 15000 |
 
 Samples per sweep are derived, not set directly. The base is 1024 at 0.5 ms with one receiver; it doubles with each sweep-time step and halves each time the receiver count doubles.
 
@@ -169,7 +165,7 @@ In MATLAB, from `processing_src/`:
 plot(rangeAxis, avgSpectrum);
 ```
 
-The three numbers are samples per sweep, sweep time in seconds and bandwidth in Hz. Take them from `samples_per_sweep_per_rx`, `sweep_time_s` and `bandwidth_hz` in the `.json`. `process_pi` handles Tx1 captures with a single receiver. `process_matlab` takes the same four positional arguments for a GUI `.mat` file.
+The three numbers are samples per sweep, sweep time in seconds and bandwidth in Hz. Take them from `samples_per_sweep_per_rx`, `sweep_time_s` and `bandwidth_hz` in the `.json`. `process_pi` handles Tx1 captures with a single receiver. `process_matlab` takes the same four positional arguments for a GUI `.mat` file. Noted that data reord from the MATLAB GUI needs to be saved by adding a ".mat" extension manually or else data is corrupted.
 
 `process_pi_matlab.m` and `process_pi_matlab_integration.m` are comparison scripts with hard-coded file paths at the top. Edit the paths before running them.
 
@@ -189,6 +185,7 @@ Do not "fix" the command pacing by opening and closing the USB device around eac
 - Sawtooth FMCW only. CW mode exists only in the MATLAB GUI.
 - No on-device DSP.
 - USB transfers are synchronous, and the whole capture is held in memory before it is written.
+- For the MATLAB GUI, the recorded radar data needs to be saved by adding a ".mat" extension manually or else data is corrupted.
 
 ## Reference documents
 
